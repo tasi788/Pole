@@ -168,7 +168,18 @@ class CalendarSkill(BaseSkill):
         }
 
         if attendees:
-            event_body["attendees"] = [{"email": email.strip()} for email in attendees]
+            attendee_list = []
+            for person in attendees:
+                person = person.strip()
+                if "@" in person:
+                    attendee_list.append({"email": person})
+                else:
+                    attendee_list.append({"displayName": person})
+            if attendee_list and any("email" in a for a in attendee_list):
+                event_body["attendees"] = [a for a in attendee_list if "email" in a]
+            if attendees:
+                event_body["description"] = (event_body.get("description", "") + 
+                    f"\n\n參與人員：{', '.join(attendees)}").strip()
 
         try:
             result = await self.calendar_tool.execute(

@@ -50,33 +50,37 @@ def init_skills(
         logger.info("AI skill initialized")
 
 
-async def mention_filter(_, client: Client, message: Message) -> bool:
-    """Filter for messages that mention the bot."""
+async def mention_or_reply_filter(_, client: Client, message: Message) -> bool:
+    """Filter for messages that mention or reply to the bot."""
     if not message.text:
         return False
 
     if not hasattr(client, "me") or not client.me:
         return False
 
+    if message.reply_to_message and message.reply_to_message.from_user:
+        if message.reply_to_message.from_user.id == client.me.id:
+            return True
+
     bot_username = client.me.username
-    if not bot_username:
-        return False
+    if bot_username and f"@{bot_username}" in message.text:
+        return True
 
-    return f"@{bot_username}" in message.text
-
-
-mention_bot = filters.create(mention_filter)
+    return False
 
 
-@Client.on_message(mention_bot)
+mention_or_reply_bot = filters.create(mention_or_reply_filter)
+
+
+@Client.on_message(mention_or_reply_bot)
 async def handle_mention(client: Client, message: Message):
-    """Handle messages that mention the bot."""
+    """Handle messages that mention or reply to the bot."""
     text = message.text or ""
     user_id = message.from_user.id
-    logger.info(f"Bot mentioned by user {user_id}: {text[:50]}...")
+    logger.info(f"Bot triggered by user {user_id}: {text[:50]}...")
 
     bot_username = client.me.username
-    clean_text = text.replace(f"@{bot_username}", "").strip()
+    clean_text = text.replace(f"@{bot_username}", "").strip() if bot_username else text
 
     chat_id = message.chat.id
 
