@@ -236,7 +236,8 @@ class CalendarSkill(BaseSkill):
                 start_str = start
 
             summary = event.get("summary", "（無標題）")
-            lines.append(f"• **{start_str}** - {summary}")
+            event_id = event.get("id", "")
+            lines.append(f"• **{start_str}** - {summary} [ID: `{event_id}`]")
 
         return "\n".join(lines)
 
