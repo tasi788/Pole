@@ -195,10 +195,16 @@ class CalendarSkill(BaseSkill):
             logger.error(f"Failed to create event: {e}")
             return f"❌ 無法建立行程：{e}"
 
-    async def delete_event(self, event_id: str) -> str:
+    async def delete_event(self, event_id: str, calendar_id: str = None) -> str:
         """Delete a calendar event."""
+        if calendar_id is None:
+            calendar_id = self.default_calendar_id
         try:
-            success = await self.calendar_tool.execute("delete_event", event_id=event_id)
+            success = await self.calendar_tool.execute(
+                "delete_event",
+                event_id=event_id,
+                calendar_id=calendar_id,
+            )
             if success:
                 return f"✅ 已刪除行程"
             return "❌ 刪除行程失敗"

@@ -308,7 +308,10 @@ class AISkill(BaseSkill):
                     elif not await self.calendar_skill.check_permission(user_id, "delete"):
                         result = "❌ 沒有權限刪除行程（需要管理員權限）"
                     else:
-                        result = await self.calendar_skill.delete_event(args["event_id"])
+                        result = await self.calendar_skill.delete_event(
+                            event_id=args["event_id"],
+                            calendar_id=calendar_id,
+                        )
 
                 else:
                     result = f"未知的工具：{name}"
