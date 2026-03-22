@@ -6,11 +6,13 @@ from loguru import logger
 from bot.skills.calendar import CalendarSkill
 from bot.skills.ai import AISkill
 from bot.core.permissions import PermissionManager
+from bot.core.user_profiles import UserProfileManager
 from bot.types import AIConfig, GoogleCalendarConfig
 
 permission_manager: PermissionManager | None = None
 calendar_skill: CalendarSkill | None = None
 ai_skill: AISkill | None = None
+user_profile_manager: UserProfileManager | None = None
 
 
 def init_skills(
@@ -19,7 +21,10 @@ def init_skills(
     ai_config: Optional[AIConfig] = None,
 ):
     """Initialize all skills with credentials."""
-    global calendar_skill, ai_skill, permission_manager
+    global calendar_skill, ai_skill, permission_manager, user_profile_manager
+
+    user_profile_manager = UserProfileManager()
+    logger.info("User profile manager initialized")
 
     permission_manager = PermissionManager()
     if owner_id:
@@ -37,13 +42,16 @@ def init_skills(
         logger.info("Calendar skill initialized")
 
     if ai_config:
+        persona = ai_config.persona.model_dump() if ai_config.persona else {}
         ai_skill = AISkill(
             api_key=ai_config.api_key,
             base_url=ai_config.base_url,
             model=ai_config.model,
             max_tokens=ai_config.max_tokens,
             temperature=ai_config.temperature,
+            persona=persona,
             calendar_skill=calendar_skill,
+            user_profile_manager=user_profile_manager,
             permission_manager=permission_manager,
         )
         ai_skill.initialize()
@@ -76,7 +84,8 @@ mention_or_reply_bot = filters.create(mention_or_reply_filter)
 async def handle_mention(client: Client, message: Message):
     """Handle messages that mention or reply to the bot."""
     text = message.text or ""
-    user_id = message.from_user.id
+    user = message.from_user
+    user_id = user.id
     logger.info(f"Bot triggered by user {user_id}: {text[:50]}...")
 
     bot_username = client.me.username
@@ -84,8 +93,35 @@ async def handle_mention(client: Client, message: Message):
 
     chat_id = message.chat.id
 
+    user_name = user.first_name or ""
+    if user.last_name:
+        user_name += f" {user.last_name}"
+    user_username = user.username or ""
+
+    user_info = {
+        "user_id": user_id,
+        "name": user_name,
+        "username": user_username,
+    }
+
+    user_profile_text = ""
+    if user_profile_manager:
+        profile = user_profile_manager.get_or_create_profile(
+            user_id=user_id,
+            name=user_name,
+            username=user_username,
+        )
+        user_profile_manager.increment_interaction(user_id)
+        user_profile_text = profile.to_prompt()
+
     if ai_skill:
-        response = await ai_skill.handle(user_id, clean_text, chat_id=chat_id)
+        response = await ai_skill.handle(
+            user_id,
+            clean_text,
+            chat_id=chat_id,
+            user_info=user_info,
+            user_profile_text=user_profile_text,
+        )
         await message.reply_text(response)
     elif calendar_skill and calendar_skill.has_keyword(text):
         response = await calendar_skill.handle(user_id, text, chat_id=chat_id)

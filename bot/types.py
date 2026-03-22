@@ -35,12 +35,21 @@ class GoogleCalendarConfig(BaseModel):
     group_access: list[GroupCalendarAccess] = []
 
 
+class AIPersona(BaseModel):
+    name: str = "助手"
+    personality: str = ""
+    tone: str = ""
+    background: str = ""
+    rules: list[str] = []
+
+
 class AIConfig(BaseModel):
     base_url: str = "https://api.openai.com/v1"
     api_key: str
     model: str = "gpt-4o"
     max_tokens: int = 4096
     temperature: float = 0.7
+    persona: AIPersona = AIPersona()
 
 
 class Config(BaseModel):
