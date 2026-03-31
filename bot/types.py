@@ -29,8 +29,7 @@ class GroupCalendarAccess(BaseModel):
 
 
 class GoogleCalendarConfig(BaseModel):
-    credentials_path: str = "credentials.json"
-    token_path: str = "token.json"
+    credentials_path: str = "service_account.json"
     default_calendar_id: str = "primary"
     group_access: list[GroupCalendarAccess] = []
 

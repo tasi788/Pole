@@ -45,7 +45,6 @@ class CalendarSkill(BaseSkill):
     def __init__(
         self,
         credentials_path: str,
-        token_path: str = "token.json",
         timezone: str = "Asia/Taipei",
         default_calendar_id: str = "primary",
         group_access: Optional[list[GroupCalendarAccess]] = None,
@@ -58,7 +57,7 @@ class CalendarSkill(BaseSkill):
         if group_access:
             for access in group_access:
                 self.group_access[access.group_id] = access
-        self.calendar_tool = GoogleCalendarTool(credentials_path, token_path)
+        self.calendar_tool = GoogleCalendarTool(credentials_path)
         self.register_tool(self.calendar_tool)
 
     def initialize(self):

@@ -2,9 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from loguru import logger
 
@@ -19,34 +17,19 @@ class GoogleCalendarTool(BaseTool):
     name = "google_calendar"
     description = "Google Calendar API operations"
 
-    def __init__(self, credentials_path: str, token_path: str = "token.json"):
+    def __init__(self, credentials_path: str):
         super().__init__()
         self.credentials_path = Path(credentials_path)
-        self.token_path = Path(token_path)
         self.service = None
 
     def initialize(self) -> None:
-        """Authenticate with Google Calendar API."""
-        creds = None
-
-        if self.token_path.exists():
-            creds = Credentials.from_authorized_user_file(str(self.token_path), SCOPES)
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    str(self.credentials_path), SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-
-            with open(self.token_path, "w") as token:
-                token.write(creds.to_json())
-
+        """Authenticate with Google Calendar API using Service Account."""
+        creds = Credentials.from_service_account_file(
+            str(self.credentials_path), scopes=SCOPES
+        )
         self.service = build("calendar", "v3", credentials=creds)
         self._initialized = True
-        logger.info("Google Calendar Tool initialized")
+        logger.info("Google Calendar Tool initialized (service account)")
 
     async def execute(self, action: str, **kwargs) -> Any:
         """Execute a calendar action."""

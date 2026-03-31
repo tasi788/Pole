@@ -33,7 +33,6 @@ def init_skills(
     if calendar_config:
         calendar_skill = CalendarSkill(
             credentials_path=calendar_config.credentials_path,
-            token_path=calendar_config.token_path,
             default_calendar_id=calendar_config.default_calendar_id,
             group_access=calendar_config.group_access,
             permission_manager=permission_manager,

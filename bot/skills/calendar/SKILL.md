@@ -73,8 +73,7 @@ permissions:
 ```yaml
 # env_config.yaml
 google_calendar:
-  credentials_path: "credentials.json"
-  token_path: "token.json"
+  credentials_path: "service_account.json"
   default_calendar_id: "primary"
   timezone: "Asia/Taipei"
 ```
