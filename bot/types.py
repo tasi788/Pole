@@ -54,8 +54,14 @@ class AIConfig(BaseModel):
     persona: AIPersona = AIPersona()
 
 
+class NotificationConfig(BaseModel):
+    invite_target_chat_id: Optional[int] = None
+    invite_target_thread_id: Optional[int] = None
+
+
 class Config(BaseModel):
     bot: BotConfig
     logging: LoggingConfig = LoggingConfig()
     google_calendar: Optional[GoogleCalendarConfig] = None
     ai: Optional[AIConfig] = None
+    notifications: Optional[NotificationConfig] = None

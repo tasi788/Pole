@@ -16,13 +16,15 @@ def create_bot() -> Client:
     )
 
     from bot.plugins.mention import init_skills
+    from bot.plugins.new_invite import init_notification
 
     init_skills(
         owner_id=config.bot.owner_id,
         calendar_config=config.google_calendar,
         ai_config=config.ai,
     )
-    log.info("Skills initialized")
+    init_notification(config=config.notifications)
+    log.info("Skills and notifications initialized")
 
     bot = Client(
         name="pole_bot",
