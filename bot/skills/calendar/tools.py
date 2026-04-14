@@ -55,24 +55,33 @@ class GoogleCalendarTool(BaseTool):
         self,
         calendar_id: str = "primary",
         time_min: Optional[datetime] = None,
+        time_max: Optional[datetime] = None,
         max_results: int = 10,
     ) -> list[dict]:
         """List events from calendar."""
+        from datetime import timezone as _tz_utc
+
+        def _to_rfc3339(dt: datetime) -> str:
+            if dt.tzinfo is None:
+                return dt.isoformat() + "Z"
+            return dt.astimezone(_tz_utc.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
         if time_min is None:
-            time_min = datetime.utcnow()
+            from datetime import timezone as _tz
 
-        events_result = (
-            self.service.events()
-            .list(
-                calendarId=calendar_id,
-                timeMin=time_min.isoformat() + "Z",
-                maxResults=max_results,
-                singleEvents=True,
-                orderBy="startTime",
-            )
-            .execute()
+            time_min = datetime.now(_tz.utc)
+
+        query_params: dict = dict(
+            calendarId=calendar_id,
+            timeMin=_to_rfc3339(time_min),
+            maxResults=max_results,
+            singleEvents=True,
+            orderBy="startTime",
         )
+        if time_max is not None:
+            query_params["timeMax"] = _to_rfc3339(time_max)
 
+        events_result = self.service.events().list(**query_params).execute()
         return events_result.get("items", [])
 
     async def _get_event(
@@ -109,9 +118,7 @@ class GoogleCalendarTool(BaseTool):
             .execute()
         )
 
-    async def _delete_event(
-        self, event_id: str, calendar_id: str = "primary"
-    ) -> bool:
+    async def _delete_event(self, event_id: str, calendar_id: str = "primary") -> bool:
         """Delete an event."""
         try:
             self.service.events().delete(

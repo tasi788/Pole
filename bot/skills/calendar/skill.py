@@ -5,6 +5,7 @@ from loguru import logger
 
 from bot.core.base_skill import BaseSkill
 from bot.core.permissions import Permission, PermissionLevel, PermissionManager
+from bot.skills.calendar.attendee_store import AttendeeStore
 from bot.skills.calendar.tools import GoogleCalendarTool
 from bot.types import GroupCalendarAccess
 
@@ -15,8 +16,17 @@ class CalendarSkill(BaseSkill):
     name = "calendar"
     description = "Google Calendar 行事曆管理"
     keywords = [
-        "行事曆", "日曆", "calendar", "行程", "schedule",
-        "會議", "meeting", "活動", "event", "提醒", "remind"
+        "行事曆",
+        "日曆",
+        "calendar",
+        "行程",
+        "schedule",
+        "會議",
+        "meeting",
+        "活動",
+        "event",
+        "提醒",
+        "remind",
     ]
     required_permissions = [
         Permission(
@@ -58,6 +68,7 @@ class CalendarSkill(BaseSkill):
             for access in group_access:
                 self.group_access[access.group_id] = access
         self.calendar_tool = GoogleCalendarTool(credentials_path)
+        self.attendee_store = AttendeeStore()
         self.register_tool(self.calendar_tool)
 
     def initialize(self):
@@ -96,7 +107,19 @@ class CalendarSkill(BaseSkill):
         calendar_id = self.get_calendar_id_for_chat(chat_id)
         text_lower = text.lower()
 
-        if any(kw in text_lower for kw in ["查看", "列出", "顯示", "list", "show", "upcoming", "今天", "today"]):
+        if any(
+            kw in text_lower
+            for kw in [
+                "查看",
+                "列出",
+                "顯示",
+                "list",
+                "show",
+                "upcoming",
+                "今天",
+                "today",
+            ]
+        ):
             if not self.check_group_permission(chat_id, "read"):
                 return "❌ 此群組沒有權限查看行事曆"
             if not await self.check_permission(user_id, "read"):
@@ -110,7 +133,9 @@ class CalendarSkill(BaseSkill):
                 return "❌ 你沒有權限新增行程"
             return await self._handle_create_event(text)
 
-        elif any(kw in text_lower for kw in ["刪除", "取消", "delete", "cancel", "remove"]):
+        elif any(
+            kw in text_lower for kw in ["刪除", "取消", "delete", "cancel", "remove"]
+        ):
             if not self.check_group_permission(chat_id, "delete"):
                 return "❌ 此群組沒有權限刪除行程"
             if not await self.check_permission(user_id, "delete"):
@@ -120,7 +145,9 @@ class CalendarSkill(BaseSkill):
         else:
             return await self.get_upcoming_events(calendar_id=calendar_id)
 
-    async def get_upcoming_events(self, days: int = 7, max_results: int = 10, calendar_id: str = None) -> str:
+    async def get_upcoming_events(
+        self, days: int = 7, max_results: int = 10, calendar_id: str = None
+    ) -> str:
         """Get upcoming events formatted as text."""
         if calendar_id is None:
             calendar_id = self.default_calendar_id
@@ -142,13 +169,15 @@ class CalendarSkill(BaseSkill):
         end_time: Optional[datetime] = None,
         description: str = "",
         location: str = "",
-        attendees: Optional[list[str]] = None,
+        attendees: Optional[list[dict]] = None,
         calendar_id: str = None,
     ) -> str:
-        """Create a new calendar event."""
+        """Create a new calendar event.
+
+        attendees: list of {user_id: int, full_name: str} dicts (Telegram users).
+        """
         if end_time is None:
             end_time = start_time + timedelta(hours=1)
-
         if calendar_id is None:
             calendar_id = self.default_calendar_id
 
@@ -166,30 +195,31 @@ class CalendarSkill(BaseSkill):
             },
         }
 
-        if attendees:
-            attendee_list = []
-            for person in attendees:
-                person = person.strip()
-                if "@" in person:
-                    attendee_list.append({"email": person})
-                else:
-                    attendee_list.append({"displayName": person})
-            if attendee_list and any("email" in a for a in attendee_list):
-                event_body["attendees"] = [a for a in attendee_list if "email" in a]
-            if attendees:
-                event_body["description"] = (event_body.get("description", "") + 
-                    f"\n\n參與人員：{', '.join(attendees)}").strip()
-
         try:
             result = await self.calendar_tool.execute(
                 "insert_event",
                 event_body=event_body,
                 calendar_id=calendar_id,
             )
+
+            event_id = result.get("id", "")
+
+            # Persist Telegram attendee info locally
+            if attendees and event_id:
+                self.attendee_store.save(event_id, attendees)
+
+            # Build plain-text confirmation (no HTML – will be sent as regular markdown)
             attendee_str = ""
             if attendees:
-                attendee_str = f"\n👥 參與者：{', '.join(attendees)}"
-            return f"✅ 已建立行程：{result.get('summary')}\n📍 地點：{location}{attendee_str}\n🔗 {result.get('htmlLink', '')}"
+                names = "、".join(a.get("full_name", "未知") for a in attendees)
+                attendee_str = f"\n👥 參與者：{names}"
+
+            return (
+                f"✅ 已建立行程：**{result.get('summary')}**\n"
+                f"📍 地點：{location}"
+                f"{attendee_str}\n"
+                f"🔗 {result.get('htmlLink', '')}"
+            )
         except Exception as e:
             logger.error(f"Failed to create event: {e}")
             return f"❌ 無法建立行程：{e}"
@@ -205,6 +235,7 @@ class CalendarSkill(BaseSkill):
                 calendar_id=calendar_id,
             )
             if success:
+                self.attendee_store.delete(event_id)
                 return f"✅ 已刪除行程"
             return "❌ 刪除行程失敗"
         except Exception as e:
@@ -221,10 +252,7 @@ class CalendarSkill(BaseSkill):
 
     async def _handle_delete_event(self, text: str) -> str:
         """Parse text and delete event."""
-        return (
-            "📅 要刪除行程，請使用以下格式：\n\n"
-            "`/calendar delete [event_id]`"
-        )
+        return "📅 要刪除行程，請使用以下格式：\n\n`/calendar delete [event_id]`"
 
     def _format_events(self, events: list[dict]) -> str:
         """Format events list to readable text."""
