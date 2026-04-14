@@ -9,7 +9,6 @@ from bot.core.permissions import Permission, PermissionLevel, PermissionManager
 from bot.skills.ai.tools import OpenAITool
 from bot.skills.calendar import CalendarSkill
 
-
 BASE_SYSTEM_PROMPT = """當用戶詢問行事曆相關問題時，請使用提供的工具來操作。
 - 查看行程：使用 calendar_list_events
 - 新增行程：使用 calendar_create_event
@@ -19,7 +18,7 @@ BASE_SYSTEM_PROMPT = """當用戶詢問行事曆相關問題時，請使用提�
 1. 標題 (summary) - 必填
 2. 時間 (start_time) - 必填
 3. 地點 (location) - 必填
-4. 參與人員 (attendees) - 必填，人員名稱或 email 皆可
+4. 參與人員 (attendees) - 必填，必須使用訊息中已標記（@mention）的 Telegram 用戶 ID
 
 如果用戶要新增行程但缺少上述任何必填資訊，請先詢問用戶補充缺少的資訊，不要直接呼叫 calendar_create_event。
 只有當所有必填資訊都齊全時，才能呼叫 calendar_create_event 建立行程。
@@ -30,6 +29,12 @@ BASE_SYSTEM_PROMPT = """當用戶詢問行事曆相關問題時，請使用提�
 - 不要自己編造 event_id，必須使用列表中返回的真實 ID
 
 當前時間：{current_time}
+
+**重要：指定參與人員的方式：**
+- 參與人員只能從訊息中 @mention 標記的用戶取得
+- 系統會自動列出已標記的用戶及其 Telegram User ID
+- 在 calendar_create_event 的 attendees 欄位填入對應的 User ID（整數）
+- 如果用戶沒有標記任何人，請提醒他們用 @mention 標記參與者，不要憑空捏造 ID
 """
 
 
@@ -38,6 +43,7 @@ def build_system_prompt(
     current_time: str,
     user_info: dict = None,
     user_profile_text: str = "",
+    tagged_users: list[dict] | None = None,
 ) -> str:
     """Build system prompt with persona settings and user context."""
     parts = []
@@ -66,9 +72,23 @@ def build_system_prompt(
         if user_info.get("username"):
             user_context += f"\n用戶名：@{user_info['username']}"
         if user_profile_text:
-            user_context += f"\n\n**此用戶的已知特點（僅供參考）：**\n{user_profile_text}"
+            user_context += (
+                f"\n\n**此用戶的已知特點（僅供參考）：**\n{user_profile_text}"
+            )
 
-    return f"{persona_prompt}\n\n{BASE_SYSTEM_PROMPT.format(current_time=current_time)}{user_context}"
+    tagged_section = ""
+    if tagged_users:
+        user_lines = "\n".join(
+            f"- {u['full_name']}：User ID = {u['user_id']}" for u in tagged_users
+        )
+        tagged_section = (
+            f"\n\n**此訊息中已標記的 Telegram 用戶（可作為行程參與者）：**\n"
+            f"{user_lines}\n"
+            f"新增行程時，將上方用戶的 User ID（整數）放入 attendees 欄位。"
+        )
+
+    return f"{persona_prompt}\n\n{BASE_SYSTEM_PROMPT.format(current_time=current_time)}{user_context}{tagged_section}"
+
 
 CALENDAR_TOOLS = [
     {
@@ -119,11 +139,11 @@ CALENDAR_TOOLS = [
                     },
                     "attendees": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "參與人員列表，可以是名稱或 email（必填）",
+                        "items": {"type": "integer"},
+                        "description": "參與人員的 Telegram User ID 列表（整數）。只能使用系統提示中「已標記 Telegram 用戶」列出的 ID，不得捏造。",
                     },
                 },
-                "required": ["summary", "start_time", "location", "attendees"],
+                "required": ["summary", "start_time", "location"],
             },
         },
     },
@@ -233,22 +253,28 @@ class AISkill(BaseSkill):
         if user_id not in self.conversation_history:
             self.conversation_history[user_id] = []
 
-        self.conversation_history[user_id].append({
-            "role": "user",
-            "content": text,
-        })
+        self.conversation_history[user_id].append(
+            {
+                "role": "user",
+                "content": text,
+            }
+        )
 
         if len(self.conversation_history[user_id]) > 20:
-            self.conversation_history[user_id] = self.conversation_history[user_id][-20:]
+            self.conversation_history[user_id] = self.conversation_history[user_id][
+                -20:
+            ]
 
         user_info = context.get("user_info", {})
         user_profile_text = context.get("user_profile_text", "")
+        tagged_users: list[dict] = context.get("tagged_users") or []
 
         system_prompt = build_system_prompt(
             persona=self.persona,
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             user_info=user_info,
             user_profile_text=user_profile_text,
+            tagged_users=context.get("tagged_users"),
         )
 
         tools = []
@@ -267,30 +293,39 @@ class AISkill(BaseSkill):
 
                 if result["tool_calls"]:
                     chat_id = context.get("chat_id", user_id)
-                    tool_results = await self._execute_tool_calls(user_id, result["tool_calls"], chat_id=chat_id)
+                    tool_results = await self._execute_tool_calls(
+                        user_id,
+                        result["tool_calls"],
+                        chat_id=chat_id,
+                        tagged_users=tagged_users,
+                    )
 
-                    self.conversation_history[user_id].append({
-                        "role": "assistant",
-                        "content": result["content"],
-                        "tool_calls": [
-                            {
-                                "id": tc["id"],
-                                "type": "function",
-                                "function": {
-                                    "name": tc["name"],
-                                    "arguments": json.dumps(tc["arguments"]),
-                                },
-                            }
-                            for tc in result["tool_calls"]
-                        ],
-                    })
+                    self.conversation_history[user_id].append(
+                        {
+                            "role": "assistant",
+                            "content": result["content"],
+                            "tool_calls": [
+                                {
+                                    "id": tc["id"],
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc["name"],
+                                        "arguments": json.dumps(tc["arguments"]),
+                                    },
+                                }
+                                for tc in result["tool_calls"]
+                            ],
+                        }
+                    )
 
                     for tool_result in tool_results:
-                        self.conversation_history[user_id].append({
-                            "role": "tool",
-                            "tool_call_id": tool_result["id"],
-                            "content": tool_result["result"],
-                        })
+                        self.conversation_history[user_id].append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_result["id"],
+                                "content": tool_result["result"],
+                            }
+                        )
 
                     final_result = await self.openai_tool.execute(
                         "chat_with_tools",
@@ -309,10 +344,12 @@ class AISkill(BaseSkill):
                     system_prompt=system_prompt,
                 )
 
-            self.conversation_history[user_id].append({
-                "role": "assistant",
-                "content": response,
-            })
+            self.conversation_history[user_id].append(
+                {
+                    "role": "assistant",
+                    "content": response,
+                }
+            )
 
             return response
 
@@ -320,13 +357,23 @@ class AISkill(BaseSkill):
             logger.error(f"AI chat error: {e}")
             return f"❌ AI 處理錯誤：{e}"
 
-    async def _execute_tool_calls(self, user_id: int, tool_calls: list[dict], chat_id: int = None) -> list[dict]:
+    async def _execute_tool_calls(
+        self,
+        user_id: int,
+        tool_calls: list[dict],
+        chat_id: int = None,
+        tagged_users: list[dict] | None = None,
+    ) -> list[dict]:
         """Execute function calls and return results."""
         results = []
         if chat_id is None:
             chat_id = user_id
 
-        calendar_id = self.calendar_skill.get_calendar_id_for_chat(chat_id) if self.calendar_skill else "primary"
+        calendar_id = (
+            self.calendar_skill.get_calendar_id_for_chat(chat_id)
+            if self.calendar_skill
+            else "primary"
+        )
 
         for tc in tool_calls:
             name = tc["name"]
@@ -358,20 +405,43 @@ class AISkill(BaseSkill):
                         if args.get("end_time"):
                             end_time = datetime.fromisoformat(args["end_time"])
 
+                        # Resolve attendee IDs -> structured dicts from tagged_users context
+                        raw_ids: list = args.get("attendees") or []
+                        tagged_map: dict[int, dict] = {
+                            u["user_id"]: u for u in (tagged_users or [])
+                        }
+                        structured_attendees: list[dict] = []
+                        for raw in raw_ids:
+                            try:
+                                uid = int(raw)
+                            except (TypeError, ValueError):
+                                continue
+                            if uid in tagged_map:
+                                structured_attendees.append(
+                                    {
+                                        "user_id": uid,
+                                        "full_name": tagged_map[uid]["full_name"],
+                                    }
+                                )
+
                         result = await self.calendar_skill.create_event(
                             summary=args["summary"],
                             start_time=start_time,
                             end_time=end_time,
                             description=args.get("description", ""),
                             location=args.get("location", ""),
-                            attendees=args.get("attendees", []),
+                            attendees=structured_attendees or None,
                             calendar_id=calendar_id,
                         )
 
                 elif name == "calendar_delete_event":
-                    if not self.calendar_skill.check_group_permission(chat_id, "delete"):
+                    if not self.calendar_skill.check_group_permission(
+                        chat_id, "delete"
+                    ):
                         result = "❌ 此群組沒有權限刪除行程"
-                    elif not await self.calendar_skill.check_permission(user_id, "delete"):
+                    elif not await self.calendar_skill.check_permission(
+                        user_id, "delete"
+                    ):
                         result = "❌ 沒有權限刪除行程（需要管理員權限）"
                     else:
                         result = await self.calendar_skill.delete_event(
