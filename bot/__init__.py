@@ -16,6 +16,7 @@ def create_bot() -> Client:
     )
 
     from bot.plugins.mention import init_skills
+
     init_skills(
         owner_id=config.bot.owner_id,
         calendar_config=config.google_calendar,
@@ -34,6 +35,13 @@ def create_bot() -> Client:
     @bot.on_start()
     async def on_startup(client: Client):
         client.me = await client.get_me()
-        log.info(f"Bot started: {client.me.first_name} (@{client.me.username}) [ID: {client.me.id}]")
+        log.info(
+            f"Bot started: {client.me.first_name} (@{client.me.username}) [ID: {client.me.id}]"
+        )
+
+        # Start calendar reminder scheduler
+        from bot.plugins.mention import create_reminder_scheduler
+
+        create_reminder_scheduler(client)
 
     return bot

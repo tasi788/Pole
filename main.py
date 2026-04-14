@@ -15,6 +15,11 @@ def main():
     except Exception as e:
         logger.exception(f"Bot crashed with error: {e}")
         raise
+    finally:
+        from bot.plugins.mention import reminder_scheduler
+
+        if reminder_scheduler is not None:
+            reminder_scheduler.stop()
 
 
 if __name__ == "__main__":

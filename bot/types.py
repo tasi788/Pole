@@ -1,4 +1,5 @@
 from typing import Optional
+
 from pydantic import BaseModel
 
 
@@ -32,6 +33,8 @@ class GoogleCalendarConfig(BaseModel):
     credentials_path: str = "service_account.json"
     default_calendar_id: str = "primary"
     group_access: list[GroupCalendarAccess] = []
+    timezone: str = "Asia/Taipei"
+    notify_owner: bool = True
 
 
 class AIPersona(BaseModel):
