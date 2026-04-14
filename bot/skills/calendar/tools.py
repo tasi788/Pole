@@ -44,6 +44,8 @@ class GoogleCalendarTool(BaseTool):
             "insert_event": self._insert_event,
             "update_event": self._update_event,
             "delete_event": self._delete_event,
+            "list_calendars": self._list_calendars,
+            "create_calendar": self._create_calendar,
         }
 
         if action not in actions:
@@ -128,3 +130,18 @@ class GoogleCalendarTool(BaseTool):
         except Exception as e:
             logger.error(f"Failed to delete event {event_id}: {e}")
             return False
+
+    async def _list_calendars(self) -> list[dict]:
+        """List all calendars accessible by the service account."""
+        result = self.service.calendarList().list().execute()
+        return result.get("items", [])
+
+    async def _create_calendar(self, summary: str, timezone: str = "Asia/Taipei") -> dict:
+        """Create a new secondary calendar and return the calendar resource."""
+        body = {
+            "summary": summary,
+            "timeZone": timezone,
+        }
+        calendar = self.service.calendars().insert(body=body).execute()
+        logger.info(f"Created new calendar: {calendar.get('id')} ({summary})")
+        return calendar

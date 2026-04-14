@@ -6,6 +6,7 @@ from loguru import logger
 from bot.core.base_skill import BaseSkill
 from bot.core.permissions import Permission, PermissionLevel, PermissionManager
 from bot.skills.calendar.attendee_store import AttendeeStore
+from bot.skills.calendar.group_calendar_store import GroupCalendarStore
 from bot.skills.calendar.tools import GoogleCalendarTool
 from bot.types import GroupCalendarAccess
 
@@ -69,6 +70,7 @@ class CalendarSkill(BaseSkill):
                 self.group_access[access.group_id] = access
         self.calendar_tool = GoogleCalendarTool(credentials_path)
         self.attendee_store = AttendeeStore()
+        self.group_calendar_store = GroupCalendarStore()
         self.register_tool(self.calendar_tool)
 
     def initialize(self):
@@ -81,16 +83,25 @@ class CalendarSkill(BaseSkill):
         return self.group_access.get(chat_id)
 
     def get_calendar_id_for_chat(self, chat_id: int) -> str:
-        """Get the calendar ID for a specific chat."""
+        """Get the calendar ID for a specific chat.
+
+        Priority: group_access (static config) → group_calendar_store (dynamic) → default.
+        """
         access = self.get_group_access(chat_id)
         if access:
             return access.calendar_id
+        stored = self.group_calendar_store.get_calendar_id(chat_id)
+        if stored:
+            return stored
         return self.default_calendar_id
 
     def check_group_permission(self, chat_id: int, action: str) -> bool:
         """Check if a group has permission for an action."""
         access = self.get_group_access(chat_id)
         if not access:
+            # Groups with a dynamically provisioned calendar also get full access
+            if self.group_calendar_store.has_group(chat_id):
+                return True
             return True
 
         if action == "read":
@@ -100,6 +111,37 @@ class CalendarSkill(BaseSkill):
         elif action == "delete":
             return access.permissions.can_delete
         return False
+
+    async def ensure_group_calendar(self, group_id: int, group_title: str) -> str:
+        """Ensure a secondary Google Calendar exists for *group_id*.
+
+        - If already registered in the store, return that calendar_id.
+        - Otherwise create a new secondary calendar via the API, persist the
+          mapping, and return the new calendar_id.
+        """
+        # 1. Already stored?
+        existing = self.group_calendar_store.get_calendar_id(group_id)
+        if existing:
+            logger.info(f"ensure_group_calendar: group {group_id} already has calendar {existing}")
+            return existing
+
+        # 2. Create a new secondary calendar
+        calendar_name = f"{group_title} ({group_id})"
+        try:
+            cal = await self.calendar_tool.execute(
+                "create_calendar",
+                summary=calendar_name,
+                timezone=self.timezone,
+            )
+            new_id: str = cal["id"]
+        except Exception as e:
+            logger.error(f"ensure_group_calendar: failed to create calendar for group {group_id}: {e}")
+            raise
+
+        # 3. Persist
+        self.group_calendar_store.register(group_id, new_id, title=group_title)
+        logger.info(f"ensure_group_calendar: created & stored calendar {new_id} for group {group_id} ({group_title})")
+        return new_id
 
     async def handle(self, user_id: int, text: str, **context) -> str:
         """Handle calendar-related requests."""

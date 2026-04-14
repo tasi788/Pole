@@ -4,6 +4,8 @@ from typing import Optional
 from loguru import logger
 from pyrogram import Client, enums, filters
 from pyrogram.types import Message
+import re
+from pyrogram import enums as _enums
 
 from bot.core.permissions import PermissionManager
 from bot.core.user_profiles import UserProfileManager
@@ -120,53 +122,97 @@ async def mention_or_reply_filter(_, client: Client, message: Message) -> bool:
 mention_or_reply_bot = filters.create(mention_or_reply_filter)
 
 
-async def _extract_tagged_users(client, message) -> list[dict]:
-    """Extract Telegram user info from message entities (mentions)."""
-    from pyrogram import enums as _enums
+async def _extract_tagged_users(client, message) -> tuple[list[dict], dict[str, int]]:
+    """Extract Telegram user info from message entities AND raw text @mentions.
 
+    Returns:
+        (tagged_users, username_map)
+        - tagged_users: list of {user_id, full_name}
+        - username_map: dict mapping resolved_username_lower -> user_id
+    """
     tagged: list[dict] = []
     seen_ids: set[int] = set()
-
-    if not message.entities:
-        return tagged
+    seen_usernames: set[str] = set()  # populated ONLY after successful resolution
+    username_map: dict[str, int] = {}  # username_lower -> user_id (for text injection)
 
     bot_id = client.me.id if (hasattr(client, "me") and client.me) else None
+    bot_username = (client.me.username or "").lower() if (hasattr(client, "me") and client.me) else ""
     text: str = message.text or ""
 
-    for entity in message.entities:
-        user_obj = None
-
-        if entity.type == _enums.MessageEntityType.TEXT_MENTION:
-            # User tagged without a public username – entity carries the User object
-            if entity.user:
-                user_obj = entity.user
-
-        elif entity.type == _enums.MessageEntityType.MENTION:
-            # @username mention – resolve to User object via API
-            mention_slice = text[entity.offset : entity.offset + entity.length]
-            username = mention_slice.lstrip("@")
-            if username:
-                try:
-                    user_obj = await client.get_users(username)
-                except Exception as exc:
-                    logger.warning(f"Could not resolve @{username}: {exc}")
-                    continue
+    async def _resolve_username(username: str, source: str) -> None:
+        """Resolve a @username string and append to tagged list if valid."""
+        uname_lower = username.lower()
+        if uname_lower in seen_usernames:
+            logger.debug(f"@{username} already resolved, skipping ({source})")
+            return
+        if uname_lower == bot_username:
+            return
+        try:
+            user_obj = await client.get_users(username)
+        except Exception as exc:
+            # Do NOT add to seen_usernames here - let the other pass retry
+            logger.warning(f"Could not resolve @{username} ({source}): {exc}")
+            return
 
         if user_obj is None:
-            continue
-        if user_obj.id == bot_id:
-            continue  # skip the bot itself
-        if user_obj.id in seen_ids:
-            continue  # deduplicate
+            logger.warning(f"get_users(@{username}) returned None ({source})")
+            return
+
+        # Mark as seen regardless (bot or duplicate)
+        seen_usernames.add(uname_lower)
+        if user_obj.username:
+            seen_usernames.add(user_obj.username.lower())
+            username_map[user_obj.username.lower()] = user_obj.id
+        username_map[uname_lower] = user_obj.id
+
+        if user_obj.id == bot_id or user_obj.id in seen_ids:
+            return
 
         seen_ids.add(user_obj.id)
         first = user_obj.first_name or ""
         last = user_obj.last_name or ""
         full_name = f"{first} {last}".strip() or f"uid:{user_obj.id}"
-
         tagged.append({"user_id": user_obj.id, "full_name": full_name})
+        logger.info(f"Resolved @{username} ({source}) -> uid:{user_obj.id} ({full_name})")
 
-    return tagged
+    # -- Pass 1: Telegram entities --------------------------------------------
+    entity_list = message.entities or []
+    logger.debug(f"_extract_tagged_users: {len(entity_list)} entities, text={repr(text[:60])}")
+
+    for entity in entity_list:
+        if entity.type == _enums.MessageEntityType.TEXT_MENTION:
+            # No public username - entity carries the User object directly
+            user_obj = entity.user
+            if user_obj is None or user_obj.id == bot_id or user_obj.id in seen_ids:
+                continue
+            seen_ids.add(user_obj.id)
+            if user_obj.username:
+                seen_usernames.add(user_obj.username.lower())
+                username_map[user_obj.username.lower()] = user_obj.id
+            first = user_obj.first_name or ""
+            last = user_obj.last_name or ""
+            full_name = f"{first} {last}".strip() or f"uid:{user_obj.id}"
+            tagged.append({"user_id": user_obj.id, "full_name": full_name})
+            logger.info(f"TEXT_MENTION -> uid:{user_obj.id} ({full_name})")
+
+        elif entity.type == _enums.MessageEntityType.MENTION:
+            mention_slice = text[entity.offset : entity.offset + entity.length]
+            username = mention_slice.lstrip("@")
+            logger.debug(f"MENTION entity offset={entity.offset} -> '{mention_slice}'")
+            if username:
+                await _resolve_username(username, "entity")
+
+    # -- Pass 2: regex fallback for plain-text @username ----------------------
+    for match in re.finditer(r"@([A-Za-z0-9_]{3,})", text):
+        username = match.group(1)
+        if username.lower() in seen_usernames:
+            continue
+        logger.debug(f"regex found unresolved @{username}, trying get_users")
+        await _resolve_username(username, "regex")
+
+    logger.debug(f"_extract_tagged_users result: tagged={tagged}, username_map={username_map}")
+    return tagged, username_map
+
 
 
 @Client.on_message(mention_or_reply_bot)
@@ -179,7 +225,19 @@ async def handle_mention(client: Client, message: Message):
 
     bot_username = client.me.username
     clean_text = text.replace(f"@{bot_username}", "").strip() if bot_username else text
-    tagged_users = await _extract_tagged_users(client, message)
+    tagged_users, username_map = await _extract_tagged_users(client, message)
+
+    # Inject resolved user IDs directly into clean_text so the AI always has them
+    # e.g. "@stu5016" -> "@stu5016 [id:14738514]"
+    if username_map:
+        def _inject_id(match: re.Match) -> str:
+            uname = match.group(1)
+            uid = username_map.get(uname.lower())
+            if uid and uname.lower() != (bot_username or "").lower():
+                return f"@{uname} [id:{uid}]"
+            return match.group(0)
+        clean_text = re.sub(r"@([A-Za-z0-9_]{3,})", _inject_id, clean_text)
+        logger.debug(f"clean_text after ID injection: {clean_text[:120]}")
 
     chat_id = message.chat.id
 
@@ -227,3 +285,67 @@ async def handle_mention(client: Client, message: Message):
         await message.reply_text(
             "你好！有什麼我可以幫忙的嗎？\n\n提示：你可以問我關於「行事曆」的問題。"
         )
+
+
+@Client.on_chat_member_updated()
+async def handle_bot_added(client: Client, update):
+    """Triggered when the bot's membership status changes in any chat.
+
+    When the bot is added to a group / supergroup, automatically provision
+    a secondary Google Calendar for that chat if one does not yet exist.
+    """
+    from pyrogram.enums import ChatMemberStatus
+    from pyrogram.types import ChatMemberUpdated
+
+    update: ChatMemberUpdated  # type annotation for IDE
+
+    # Only care about the bot itself being added
+    bot_id = client.me.id if (hasattr(client, "me") and client.me) else None
+    if bot_id is None:
+        return
+
+    new_member = update.new_chat_member
+    if new_member is None or new_member.user is None:
+        return
+    if new_member.user.id != bot_id:
+        return
+
+    # Check that the new status is "member" or "administrator" (i.e. joined)
+    joined_statuses = {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER}
+    if new_member.status not in joined_statuses:
+        return
+
+    # Ignore private chats
+    chat = update.chat
+    if chat is None:
+        return
+    from pyrogram.enums import ChatType
+    if chat.type == ChatType.PRIVATE:
+        return
+
+    group_id = chat.id
+    group_title = chat.title or f"group_{group_id}"
+
+    logger.info(f"Bot was added to group '{group_title}' ({group_id}), provisioning calendar...")
+
+    if calendar_skill is None:
+        logger.warning("calendar_skill not available – skipping calendar provisioning")
+        return
+
+    try:
+        calendar_id = await calendar_skill.ensure_group_calendar(group_id, group_title)
+        await client.send_message(
+            group_id,
+            f"📅 已為此群組建立專屬行事曆！\n"
+            f"📌 行事曆 ID：`{calendar_id}`\n"
+            f"可以直接 @我 來新增、查詢或刪除行程。",
+        )
+    except Exception as e:
+        logger.error(f"Failed to provision calendar for group {group_id}: {e}")
+        try:
+            await client.send_message(
+                group_id,
+                f"⚠️ 無法自動建立行事曆，請聯絡機器人管理員。\n原因：{e}"
+            )
+        except Exception:
+            pass
