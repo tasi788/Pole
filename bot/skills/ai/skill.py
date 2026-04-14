@@ -42,6 +42,7 @@ def build_system_prompt(
     persona: dict,
     current_time: str,
     user_info: dict = None,
+    chat_info: dict = None,
     user_profile_text: str = "",
     tagged_users: list[dict] | None = None,
 ) -> str:
@@ -75,6 +76,11 @@ def build_system_prompt(
             user_context += (
                 f"\n\n**此用戶的已知特點（僅供參考）：**\n{user_profile_text}"
             )
+
+    if chat_info:
+        chat_id_val = chat_info.get("chat_id", "未知")
+        chat_title = chat_info.get("chat_title", "未知")
+        user_context += f"\n\n**當前群組資訊：**\n群組名稱：{chat_title}\n群組 ID：{chat_id_val}"
 
     tagged_section = ""
     if tagged_users:
@@ -266,6 +272,7 @@ class AISkill(BaseSkill):
             ]
 
         user_info = context.get("user_info", {})
+        chat_info = context.get("chat_info", {})
         user_profile_text = context.get("user_profile_text", "")
         tagged_users: list[dict] = context.get("tagged_users") or []
 
@@ -273,6 +280,7 @@ class AISkill(BaseSkill):
             persona=self.persona,
             current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             user_info=user_info,
+            chat_info=chat_info,
             user_profile_text=user_profile_text,
             tagged_users=context.get("tagged_users"),
         )

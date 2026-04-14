@@ -194,6 +194,11 @@ async def handle_mention(client: Client, message: Message):
         "username": user_username,
     }
 
+    chat_info = {
+        "chat_id": message.chat.id,
+        "chat_title": message.chat.title or message.chat.first_name or "私人對話",
+    }
+
     user_profile_text = ""
     if user_profile_manager:
         profile = user_profile_manager.get_or_create_profile(
@@ -210,6 +215,7 @@ async def handle_mention(client: Client, message: Message):
             clean_text,
             chat_id=chat_id,
             user_info=user_info,
+            chat_info=chat_info,
             user_profile_text=user_profile_text,
             tagged_users=tagged_users,
         )
